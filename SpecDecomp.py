@@ -5,6 +5,7 @@ import os
 import glob
 from lmfit import Parameters, fit_report, minimize
 import time
+import emcee
 
 OII1_WL=3729.225
 OII2_WL=3735.784
@@ -243,7 +244,7 @@ class SpecDecomp():
     
         return amp*np.exp(-(wave-mu)**2/(2*sigma**2))
     
-    def emission_lines(self,wave,params_dict,return_gaussians=False):
+    def emission_lines(self,wave,params,return_gaussians=False,param_dict=True):
         '''
         Constructs the emission lines according to the following rules
         
@@ -272,7 +273,8 @@ class SpecDecomp():
            Theoretically these should also be tied to OIII 5007, but since we'll be fitting this WL area first,
            and then fitting the Hbeta region after, it makes more sense to tie them seperately
            
-        - params_dict should be a dictionary that includes the names
+        - if param_dict=False, params should be a list of only the emission parameters given below   
+        - if param_dict=True, params should be a dictionary that includes the names
         
         params['ampOII3729']
         params['ampOII3735']
@@ -315,27 +317,27 @@ class SpecDecomp():
         params['WLOIII50072']
         params['widthOIII50072']
         '''
-        
-        params=[params_dict['ampOII3729'],
-                params_dict['ampOII3735'],
-                params_dict['ampNeIII3868'],
-                params_dict['ampNeIII3966'],
-                params_dict['ampSII4073'],
-                params_dict['groupampratio'],
-                params_dict['groupWLoffset1'],
-                params_dict['groupWLoffset2'],
-                params_dict['groupwidth1'],
-                params_dict['groupwidth2'],
-                params_dict['ampHDelta'],params_dict['WLHDelta'],params_dict['widthHDelta'],
-                params_dict['ampHGamma'],params_dict['WLHGamma'],params_dict['widthHGamma'],
-                params_dict['ampHeII'],params_dict['WLHeII'],params_dict['widthHeII'],
-                params_dict['ampHBeta1'],params_dict['WLHBeta1'],params_dict['widthHBeta1'],
-                params_dict['ampHBeta2'],params_dict['WLHBeta2'],params_dict['widthHBeta2'],
-                params_dict['ampHBeta3'],params_dict['WLHBeta3'],params_dict['widthHBeta3'],
-                params_dict['ampHBeta4'],params_dict['WLHBeta4'],params_dict['widthHBeta4'],
-                params_dict['ampNHBeta'],
-                params_dict['ampOIII50071'],params_dict['WLOIII50071'],params_dict['widthOIII50071'],
-                params_dict['ampOIII50072'],params_dict['WLOIII50072'],params_dict['widthOIII50072']]
+        if param_dict:
+            params=[params['ampOII3729'],
+                    params['ampOII3735'],
+                    params['ampNeIII3868'],
+                    params['ampNeIII3966'],
+                    params['ampSII4073'],
+                    params['groupampratio'],
+                    params['groupWLoffset1'],
+                    params['groupWLoffset2'],
+                    params['groupwidth1'],
+                    params['groupwidth2'],
+                    params['ampHDelta'],params['WLHDelta'],params['widthHDelta'],
+                    params['ampHGamma'],params['WLHGamma'],params['widthHGamma'],
+                    params['ampHeII'],params['WLHeII'],params['widthHeII'],
+                    params['ampHBeta1'],params['WLHBeta1'],params['widthHBeta1'],
+                    params['ampHBeta2'],params['WLHBeta2'],params['widthHBeta2'],
+                    params['ampHBeta3'],params['WLHBeta3'],params['widthHBeta3'],
+                    params['ampHBeta4'],params['WLHBeta4'],params['widthHBeta4'],
+                    params['ampNHBeta'],
+                    params['ampOIII50071'],params['WLOIII50071'],params['widthOIII50071'],
+                    params['ampOIII50072'],params['WLOIII50072'],params['widthOIII50072']]
         
         gaussians=[]
         
@@ -810,6 +812,111 @@ class SpecDecomp():
             print('Fitting Time: {:.1f} s'.format(time1-time0))
         
         return self.params_final
+    
+    def construct_model_emcee(self,params):
+        '''
+        emcee passes a list of params (not dict), so our prior construct model function won't work.
+        Writing a similar function here that will just work with a list
+        
+                
+        params[0]   - power law normalization
+        params[1]   - power law slope
+        params[2]   - Fe II convolution width index
+        params[3]   - Fe II scale factor
+        params[4]   - Host galaxy stellar age index
+        params[5]   - Host galaxy scale factor
+        params[6]   - Balmer continuum tau index
+        params[7]   - Balmer continuum scale factor
+        params[8]   - Balmer high order FWHM index
+        params[9]   - Balmer high order scale factor
+        params[10-] - emission line parameters 
+        '''
+        power_law=self.power_law(self.wave,params[0],params[1])
+        fe_ii_op=self.template_fitter(self.wave,self.feii_templates,params[2],params[3])
+        host=self.template_fitter(self.wave,self.stellar_templates,params[4],params[5])
+        balmer_cont=self.template_fitter(self.wave,self.balmer_cont_templates,params[6],params[7])
+        balmer_highorder=self.template_fitter(self.wave,self.balmer_highorder_templates,params[8],params[9])
+        balmer=balmer_cont+balmer_highorder
+        emission=self.emission_lines(self.wave,params[10:],return_gaussians=False,param_dict=False)
+        
+        model=power_law+fe_ii_op+host+balmer+emission
+        
+        return model
+   
+    def log_likelihood(self,params):
+        '''
+        log likelihood estimation for emcee
+        '''
+        
+        model=self.construct_model_emcee(params)
+
+        
+        return -0.5 * np.sum((self.flux - model) ** 2 / self.err**2)
+    
+    def log_prior(self,params):
+        '''
+        uniform priors for emcee
+        '''
+        
+        for i in range(len(params)):
+            
+            if params[i]<self.lower_bounds[i]:
+                return -np.inf
+            if params[i]>self.upper_bounds[i]:
+                return -np.inf
+        return 0.0
+    
+    
+    def fit_emcee(self,params_init,lower_bounds,upper_bounds,nwalkers,nsteps):
+        '''
+        Fits the spectrum given initial parameters (possibly generated by guess_initial_params())
+        This function uses MCMC to model the whole spectrum, it does not model portions of the spectrum with some params fixed
+        IMPORTANT: Currently this uses lower_bounds and upper_bounds to define uniform priors,
+            it does not have a way of specifying other priors currently.
+            
+        This will return a few additional things, like
+            - posterior chain
+            - acceptance fraction per walker
+            - chain for each model param
+            
+        You can use the model param chain to estimate uncertainties
+        
+        params:
+            -params_init - initial parameter values
+            -lower_bounds - lower limit for each parameter
+            -upper_bounds - upper limit for each parameter
+            -nwalkers - number of emcee walkers (int)
+            -nsteps - number of iterations for MCMC (int)
+        '''
+        
+        def log_probability(params):
+            '''
+            posterior for emcee
+            '''
+
+            lp=self.log_prior(params)
+            if not np.isfinite(lp):
+                return -np.inf
+            return lp + self.log_likelihood(params)
+        
+        
+        self.lower_bounds=lower_bounds
+        self.upper_bounds=upper_bounds
+        params_list=list([value for key,value in params_init.items()])
+        ndim=len(params_list)
+        
+        # Initialize walkers in a small Gaussian ball around initial parameter values
+        pos=params_list+ 1e-4 * np.random.randn(nwalkers, ndim)
+        
+        # Run Emcee
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability)
+        sampler.run_mcmc(pos, nsteps,progress=True)
+        
+        self.sampler=sampler
+        
+        return self.sampler
+        
+        
 
 
 
