@@ -50,11 +50,14 @@ pl_norm_wl=4000   # Wavelength at which the power law is normalized
 broad_start=15    # starting width for broad lines
 narrow_start=5    # starting width for narrow lines
 
-broad_max=200     # max width for broad lines
-narrow_max=50     # max width for narrow lines
+broad_max=50     # max width for broad lines
+narrow_max=10     # max width for narrow lines
+# TODO narrow_max is way too large, find a good replacement value
 
-max_offset=70     # max offset for center of emission line
-max_amp=1000       # max amplitude of gaussian emission lines
+max_broad_offset=20
+max_narrow_offset=10
+min_amp=0.1
+max_amp=100       # max amplitude of gaussian emission lines
 
 minimize_method=['least_squares','powell'] # see https://lmfit.github.io/lmfit-py/fitting.html for list of fitting methods
 # TODO if minimize_method='emcee' then the fitting algorithm will perform only one fit with all of the parameters
@@ -114,29 +117,27 @@ nan_policy='raise'
 # params['WLOIII50072']
 # params['widthOIII50072']
 
-lower_bounds=[0,-10,0,0,0,0,0,0,0,0,
-              0,0,0,0,0,0,-5,-5,0,0,
-              0,Hdelta_WL-max_offset,0,0,Hgamma_WL-max_offset,0,
-              0,HeII_WL-max_offset,0,
-              0,Hbeta_WL-max_offset,0,0,Hbeta_WL-max_offset,0,
-              0,Hbeta_WL-max_offset,0,0,Hbeta_WL-max_offset,0,
-              0,
-              0,OIII2_WL-max_offset,0,0,OIII2_WL-max_offset,0]
 
-upper_bounds=[500,4,
+lower_bounds=[0.1,-10,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,
+              0,0,0,0,0,0,-5,-5,0,0,
+              min_amp,Hdelta_WL-max_broad_offset,min_width,min_amp,Hgamma_WL-max_broad_offset,min_width,
+              min_amp,HeII_WL-max_broad_offset,min_width,
+              min_amp,Hbeta_WL-max_broad_offset,min_broad_width,min_amp,Hbeta_WL-max_broad_offset,min_broad_width,
+              min_amp,Hbeta_WL-max_broad_offset,min_broad_width,min_amp,Hbeta_WL-max_broad_offset,min_broad_width,
+              min_amp,
+              min_amp,OIII2_WL-max_narrow_offset,min_width,min_amp,OIII2_WL-max_narrow_offset,min_width]
+upper_bounds=[150,4,
               num_templates_feii-1.1,200,
               num_templates_host-1.1,200,
               num_templates_balmer_cont-1.1,200,
               num_templates_balmer_highorder-1.1,200,
-              max_amp,max_amp,max_amp,max_amp,max_amp,100,5,5,narrow_max,narrow_max,
-              max_amp,Hdelta_WL+max_offset,broad_max,max_amp,Hgamma_WL+max_offset,broad_max,
-              max_amp,HeII_WL+max_offset,broad_max,
-              max_amp,Hbeta_WL+max_offset,broad_max,max_amp,Hbeta_WL+max_offset,broad_max,
-              max_amp,Hbeta_WL+max_offset,broad_max,max_amp,Hbeta_WL+max_offset,broad_max,
+              max_amp,max_amp,max_amp,max_amp,max_amp,20,5,5,narrow_max,narrow_max,
+              max_amp,Hdelta_WL+max_broad_offset,broad_max,max_amp,Hgamma_WL+max_broad_offset,broad_max,
+              max_amp,HeII_WL+max_broad_offset,broad_max,
+              max_amp,Hbeta_WL+max_broad_offset,broad_max,max_amp,Hbeta_WL+max_broad_offset,broad_max,
+              max_amp,Hbeta_WL+max_broad_offset,broad_max,max_amp,Hbeta_WL+max_broad_offset,broad_max,
               max_amp,
-              max_amp,OIII2_WL+max_offset,narrow_max,max_amp,OIII2_WL+max_offset,narrow_max]
-
-
+              max_amp,OIII2_WL+max_narrow_offset,narrow_max,max_amp,OIII2_WL+max_narrow_offset,narrow_max]
         
 
 ####################################################################################################################################
@@ -316,6 +317,8 @@ class SpecDecomp():
         params['ampOIII50072']
         params['WLOIII50072']
         params['widthOIII50072']
+
+        TODO Should list the gaussians returned when return_gaussians=True in a comment here
         '''
         if param_dict:
             params=[params['ampOII3729'],
@@ -669,25 +672,25 @@ class SpecDecomp():
         fit_params.add('WLHeII',        value=params_init['WLHeII'],        min=lower_bounds[27],max=upper_bounds[27],vary=False)
         fit_params.add('widthHeII',     value=params_init['widthHeII'],     min=lower_bounds[28],max=upper_bounds[28],vary=False)
         
-        fit_params.add('ampHBeta1',     value=params_init['ampHBeta1'],     min=lower_bounds[26],max=upper_bounds[29],vary=False)
-        fit_params.add('WLHBeta1',      value=params_init['WLHBeta1'],      min=lower_bounds[27],max=upper_bounds[30],vary=False)
-        fit_params.add('widthHBeta1',   value=params_init['widthHBeta1'],   min=lower_bounds[28],max=upper_bounds[31],vary=False)
-        fit_params.add('ampHBeta2',     value=params_init['ampHBeta2'],     min=lower_bounds[29],max=upper_bounds[32],vary=False)
-        fit_params.add('WLHBeta2',      value=params_init['WLHBeta2'],      min=lower_bounds[30],max=upper_bounds[33],vary=False)
-        fit_params.add('widthHBeta2',   value=params_init['widthHBeta2'],   min=lower_bounds[31],max=upper_bounds[34],vary=False)
-        fit_params.add('ampHBeta3',     value=params_init['ampHBeta3'],     min=lower_bounds[32],max=upper_bounds[35],vary=False)
-        fit_params.add('WLHBeta3',      value=params_init['WLHBeta3'],      min=lower_bounds[33],max=upper_bounds[36],vary=False)
-        fit_params.add('widthHBeta3',   value=params_init['widthHBeta3'],   min=lower_bounds[34],max=upper_bounds[37],vary=False)
-        fit_params.add('ampHBeta4',     value=params_init['ampHBeta4'],     min=lower_bounds[35],max=upper_bounds[38],vary=False)
-        fit_params.add('WLHBeta4',      value=params_init['WLHBeta4'],      min=lower_bounds[36],max=upper_bounds[39],vary=False)
-        fit_params.add('widthHBeta4',   value=params_init['widthHBeta4'],   min=lower_bounds[37],max=upper_bounds[40],vary=False)
-        fit_params.add('ampNHBeta',     value=params_init['ampNHBeta'],     min=lower_bounds[38],max=upper_bounds[41],vary=False)
-        fit_params.add('ampOIII50071',  value=params_init['ampOIII50071'],  min=lower_bounds[39],max=upper_bounds[42],vary=False)
-        fit_params.add('WLOIII50071',   value=params_init['WLOIII50071'],   min=lower_bounds[40],max=upper_bounds[43],vary=False)
-        fit_params.add('widthOIII50071',value=params_init['widthOIII50071'],min=lower_bounds[41],max=upper_bounds[44],vary=False)
-        fit_params.add('ampOIII50072',  value=params_init['ampOIII50072'],  min=lower_bounds[42],max=upper_bounds[45],vary=False)
-        fit_params.add('WLOIII50072',   value=params_init['WLOIII50072'],   min=lower_bounds[43],max=upper_bounds[46],vary=False)
-        fit_params.add('widthOIII50072',value=params_init['widthOIII50072'],min=lower_bounds[44],max=upper_bounds[47],vary=False)
+        fit_params.add('ampHBeta1',     value=params_init['ampHBeta1'],     min=lower_bounds[29],max=upper_bounds[29],vary=False)
+        fit_params.add('WLHBeta1',      value=params_init['WLHBeta1'],      min=lower_bounds[30],max=upper_bounds[30],vary=False)
+        fit_params.add('widthHBeta1',   value=params_init['widthHBeta1'],   min=lower_bounds[31],max=upper_bounds[31],vary=False)
+        fit_params.add('ampHBeta2',     value=params_init['ampHBeta2'],     min=lower_bounds[32],max=upper_bounds[32],vary=False)
+        fit_params.add('WLHBeta2',      value=params_init['WLHBeta2'],      min=lower_bounds[33],max=upper_bounds[33],vary=False)
+        fit_params.add('widthHBeta2',   value=params_init['widthHBeta2'],   min=lower_bounds[34],max=upper_bounds[34],vary=False)
+        fit_params.add('ampHBeta3',     value=params_init['ampHBeta3'],     min=lower_bounds[35],max=upper_bounds[35],vary=False)
+        fit_params.add('WLHBeta3',      value=params_init['WLHBeta3'],      min=lower_bounds[36],max=upper_bounds[36],vary=False)
+        fit_params.add('widthHBeta3',   value=params_init['widthHBeta3'],   min=lower_bounds[37],max=upper_bounds[37],vary=False)
+        fit_params.add('ampHBeta4',     value=params_init['ampHBeta4'],     min=lower_bounds[38],max=upper_bounds[38],vary=False)
+        fit_params.add('WLHBeta4',      value=params_init['WLHBeta4'],      min=lower_bounds[39],max=upper_bounds[39],vary=False)
+        fit_params.add('widthHBeta4',   value=params_init['widthHBeta4'],   min=lower_bounds[40],max=upper_bounds[40],vary=False)
+        fit_params.add('ampNHBeta',     value=params_init['ampNHBeta'],     min=lower_bounds[41],max=upper_bounds[41],vary=False)
+        fit_params.add('ampOIII50071',  value=params_init['ampOIII50071'],  min=lower_bounds[42],max=upper_bounds[42],vary=False)
+        fit_params.add('WLOIII50071',   value=params_init['WLOIII50071'],   min=lower_bounds[43],max=upper_bounds[43],vary=False)
+        fit_params.add('widthOIII50071',value=params_init['widthOIII50071'],min=lower_bounds[44],max=upper_bounds[44],vary=False)
+        fit_params.add('ampOIII50072',  value=params_init['ampOIII50072'],  min=lower_bounds[45],max=upper_bounds[45],vary=False)
+        fit_params.add('WLOIII50072',   value=params_init['WLOIII50072'],   min=lower_bounds[46],max=upper_bounds[46],vary=False)
+        fit_params.add('widthOIII50072',value=params_init['widthOIII50072'],min=lower_bounds[47],max=upper_bounds[47],vary=False)
         
         fit2_result=minimize(self.residuals, 
                              fit_params, 
