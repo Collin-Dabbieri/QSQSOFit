@@ -50,6 +50,9 @@ pl_norm_wl=4000   # Wavelength at which the power law is normalized
 broad_start=15    # starting width for broad lines
 narrow_start=5    # starting width for narrow lines
 
+min_width=1
+min_broad_width=10
+
 broad_max=50     # max width for broad lines
 narrow_max=10     # max width for narrow lines
 # TODO narrow_max is way too large, find a good replacement value
