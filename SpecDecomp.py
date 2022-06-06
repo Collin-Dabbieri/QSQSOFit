@@ -13,6 +13,8 @@
 # TODO create an option for the user to be able to specify which gaussians they want and how they are tied, fixed, etc. 
 # pyspeckit does this in a good way. It might be easiest to just use pyspeckit inside this code
 
+# TODO ADD H EPSILON, YOU MIGHT NEED TO TIE THE PROFILE TO H GAMMA
+
 import math
 import numpy as np
 from matplotlib import pyplot as plt
@@ -21,6 +23,7 @@ import glob
 from lmfit import Parameters, fit_report, minimize
 import time
 import emcee
+import pyspeckit
 
 # params['pl_norm']
 # params['pl_alpha']
@@ -120,19 +123,6 @@ class SpecDecomp():
         model_select['OIII5007']=True
         self.model_select=model_select
         
-        # for the default state, we'll initialize with
-        # - 2 gaussians for narrow lines
-        # - 4 gaussians for broad hbeta
-        # - 1 gaussian for Hdelta
-        # - 1 gaussian for Hgamma
-        # - 1 gaussian for He II
-        # use set_num_gauss function to change
-        # THIS DOES NOT WORK YET, WANT TO ADD LATER
-        self.ngauss_narrow=2
-        self.ngauss_bhbeta=4
-        self.ngauss_hdelta=1
-        self.ngauss_hgamma=1
-        self.ngauss_heii=1
         
         # Initialize with some default values for lower and upper bound dictionaries
         # use set_bounds function to change
@@ -147,6 +137,8 @@ class SpecDecomp():
         self.Hbeta_WL=4862.721
         self.OIII1_WL=4960.295
         self.OIII2_WL=5008.239
+        self.OIII1_ratio=self.OIII1_WL/self.OIII2_WL
+        self.Hbeta_ratio=self.Hbeta_WL/self.OIII2_WL
     
         max_broad_offset=20 #angstroms
         max_narrow_offset=10 #angstroms
@@ -355,18 +347,6 @@ class SpecDecomp():
         model_select['HeII']=True
         '''
         self.model_select=model_select
-        
-    def set_num_gauss(self,ngauss_narrow,ngauss_bhbeta,ngauss_hdelta,ngauss_hgamma,ngauss_heii):
-        '''
-        Update the number of gaussians for different emission lines
-        
-        THIS FUNCTIONALITY WILL COME LATER, TOO COMPLICATED FOR NOW
-        '''
-        self.ngauss_narrow=ngauss_narrow
-        self.ngauss_bhbeta=ngauss_bhbeta
-        self.ngauss_hdelta=ngauss_hdelta
-        self.ngauss_hgamma=ngauss_hgamma
-        self.ngauss_heii=ngauss_heii
         
     def set_bounds(self,lower_bounds,upper_bounds):
         '''
@@ -641,7 +621,440 @@ class SpecDecomp():
             emission+=gaussians[key]
             
         return emission
+    
+
+    def get_free_val_from_string(self,string,free_values):
+        '''
+        takes a string like 'p[0]/3', 'p[5]', 'p[7]+4', 'p[13]*1.4582736' and returns the relevant value related to free_values
+        Note: It must start with 'p[idx]', then can optionally be followed with '+','-','*','/', then followed with a float
+        TODO rewrite to be able to account for something like p[6]*p[3]/p[0] which is necessary for tieing amp ratios
+        '''
+        
+        # account for tying amp ratios ex. p[6]*p[3]/p[0]
+        if len(string.split('['))>2:
+            pass
+        
+        
+        temp=string.split('[')[1] #temp should be like '15]*5'
+        idx=int(temp.split(']')[0]) #index in free_values of tied parameter
+        # what if string is just 'p[5]' (no operation)
+        # in this case, temp.split(']') will return ['5', '']
+        if len(temp.split(']')[1])!=0:
+            # there is an operation
+            right=temp.split(']')[1] # should be like '*5'
+            value=float(right[1:]) # should return the value of the operation
+            operator_str=right[0]
             
+            if operator_str=='+':
+                return free_values[idx]+value
+            elif operator_str=='-':
+                return free_values[idx]-value
+            elif operator_str=='*':
+                return free_values[idx]*value
+            elif operator_str=='/':
+                return free_values[idx]/value
+            else:
+                raise ValueError('Input string in tied {:s} has the wrong format'.format(string))
+            
+        else:
+            # no operation
+            return free_values[idx]
+        
+    def create_custom_emission(self,wave,free_values,tied):
+        '''
+        This function will take parameters for a fully customizable set of Gaussian emission lines, and return the emission spectrum.
+        Keep in mind that when using indexing in strings in the tied list, the indexes should refer to locations in free_values, 
+        not locations in tied.
+        
+        ex:
+        tied=['','','','','','',
+              'p[0]/3','p[1] * {0}'.format(self.OIII1_ratio),'p[2]','p[3]/3','p[4]* {0}'.format(self.OIII1_ratio),'p[5]',
+              '','p[1] * {0}'.format(self.Hbeta_ratio),'p[2]',
+              '','p[4] * {0}'.format(self.Hbeta_ratio),'p[5]',
+              '','','','','','','','','','','','']
+        free_values=[amp_OIII2,self.OIII2_WL,self.narrow_start,amp_OIII2,self.OIII2_WL,self.narrow_start,
+                     amp_nhb,amp_nhb,
+                     amp_bhb,self.Hbeta_WL,self.broad_start,amp_bhb,self.Hbeta_WL,self.broad_start,
+                     amp_bhb,self.Hbeta_WL,self.broad_start,amp_bhb,self.Hbeta_WL,self.broad_start]
+        
+        
+        params:
+            - wave - wavelength vector
+            - free_values - list with values for the non-tied gaussian model params
+            - tied - list specifying ties between model params
+        '''
+                     
+        # The number of free parameters will be len(tied) minus the number of tied entries
+        # or just len(free_values)
+        idx_free=0
+        emission=np.zeros(len(wave))
+        for i in range(len(tied)/3):
+            
+            if tied[i*3]=='':
+                amp=free_values[idx_free]
+                idx_free+=1
+            else:
+                amp=self.get_free_val_from_string(tied[i*3],free_values)
+            if tied[(i*3)+1]=='':
+                wl=free_values[idx_free]
+                idx_free+=1
+            else:
+                wl=self.get_free_val_from_string(tied[(i*3)+1],free_values)
+            if tied[(i*3)+2]=='':
+                width=free_values[idx_free]
+                idx_free+=1
+            else:
+                width=self.get_free_val_from_string(tied[(i*3)+2],free_values)
+                
+            # now construct a gaussian
+            gaussian=self.gaussian(wave,amp,wl,width)
+            # add this gaussian onto our emission profile
+            emission=emission+gaussian
+            
+        return emission
+            
+    def fit_custom_emission(self,minWL,maxWL,free_values,tied,can_vary,lower_bounds,upper_bounds,minimize_method):
+        '''
+        This function will take parameters for a fully customizable set of Gaussian emission lines, and fit the model
+        Keep in mind that when using indexing in strings in the tied list, the indexes should refer to locations in free_values, 
+        not locations in tied.
+        this function will look at self.model_select to decide which continuum parameters to use,
+        it will also look at self.lower_bounds and self.upper_bounds for bounds on continuum parameters
+        
+        TODO should the model inherit from self.params_init for initial continuum parameters?
+        
+        params:
+            - minWL - minimum wavelength for fitting region (if None, fit full spectrum)
+            - maxWL - maximum wavelength for fitting region
+            - free_values - list with initial values for the non-tied gaussian model params
+            - tied - list specifying ties between model params
+            - can_vary - which emission params are allowed to vary (True) or fixed (False). This is indexed relative to free_values, not tied
+            - lower_bounds - lower bounds for emission model params.  This is indexed relative to free_values, not tied
+            - upper_bounds - upper bounds for emission model params.  This is indexed relative to free_values, not tied
+        '''
+        
+        self.tied=tied
+        
+        if minWL is None:
+            wave=self.wave
+            flux=self.flux
+            err=self.err
+        else:
+            indexes=np.where(np.logical_and(self.wave>=minWL, self.wave<=maxWL))[0]
+            wave=self.wave[indexes]
+            flux=self.flux[indexes]
+            err=self.err[indexes]
+            
+        fit_params=Parameters()
+        
+        #################################### Add Continuum Model Params 
+        # Power Law
+        if self.model_select['PowerLaw']:
+            fit_params.add('pl_norm',
+                           value=self.params_init['pl_norm'],
+                           min=self.lower_bounds['pl_norm'],
+                           max=self.upper_bounds['pl_norm'],
+                           vary=True)
+            fit_params.add('pl_alpha',
+                           value=self.params_init['pl_alpha'],
+                           min=self.lower_bounds['pl_alpha'],
+                           max=self.upper_bounds['pl_alpha'],
+                           vary=True)
+        # Fe II
+        if self.model_select['FeII']:
+            fit_params.add('fe_ii_width',
+                           value=self.params_init['fe_ii_width'],
+                           min=self.lower_bounds['fe_ii_width'],
+                           max=self.upper_bounds['fe_ii_width'],
+                           vary=True)
+            fit_params.add('fe_ii_scale',
+                           value=self.params_init['fe_ii_scale'],
+                           min=self.lower_bounds['fe_ii_scale'],
+                           max=self.upper_bounds['fe_ii_scale'],
+                           vary=True)
+        # Host
+        if self.model_select['Host']:
+            fit_params.add('host_age',
+                           value=self.params_init['host_age'],
+                           min=self.lower_bounds['host_age'],
+                           max=self.upper_bounds['host_age'],
+                           vary=True)
+            fit_params.add('host_scale',
+                           value=self.params_init['host_scale'],
+                           min=self.lower_bounds['host_scale'],
+                           max=self.upper_bounds['host_scale'],
+                           vary=True)
+        # Balmer Continuum
+        if self.model_select['BalmerCont']:
+            fit_params.add('bal_cont_tau',
+                           value=self.params_init['bal_cont_tau'],
+                           min=self.lower_bounds['bal_cont_tau'],
+                           max=self.upper_bounds['bal_cont_tau'],
+                           vary=True)
+            fit_params.add('bal_cont_scale',
+                           value=self.params_init['bal_cont_scale'],
+                           min=self.lower_bounds['bal_cont_scale'],
+                           max=self.upper_bounds['bal_cont_scale'],
+                           vary=True)
+        # Balmer High Order
+        if self.model_select['BalmerHigh']:
+            fit_params.add('bal_high_width',
+                           value=self.params_init['bal_high_width'],
+                           min=self.lower_bounds['bal_high_width'],
+                           max=self.upper_bounds['bal_high_width'],
+                           vary=True)
+            fit_params.add('bal_high_scale',
+                           value=self.params_init['bal_high_scale'],
+                           min=self.lower_bounds['bal_high_scale'],
+                           max=self.upper_bounds['bal_high_scale'],
+                           vary=True)
+            
+        ######################################### Add Emission Model Params
+        
+        for i in range(len(free_values)):
+            fit_params.add('emission_'+str(i),
+                           value=free_values[i],
+                           min=lower_bounds[i],
+                           max=upper_bounds[i],
+                           vary=can_vary[i])
+            
+            
+        ######################################## Fit Model
+        
+        data=(wave,flux,err)
+        fit_result=minimize(self.residuals_custom, 
+                            fit_params, 
+                            args=(data,),
+                            nan_policy=self.nan_policy,
+                            method=minimize_method,
+                            max_nfev=None)
+        
+    def fit_custom_emission_emcee(self,nwalkers,nsteps,minWL,maxWL,continuum_dict,free_values,tied,lower_bounds,upper_bounds):
+        '''
+        This function will take parameters for a fully customizable set of Gaussian emission lines, and fit the model with emcee
+        Keep in mind that when using indexing in strings in the tied list, the indexes should refer to locations in free_values, 
+        not locations in tied.
+        this function will look at self.model_select to decide which continuum parameters to use,
+        it will also look at self.lower_bounds and self.upper_bounds for bounds on continuum parameters
+        
+        TODO should the model inherit from self.params_init for initial continuum parameters?
+        
+        params:
+            - nwalkers
+            - nsteps
+            - minWL - minimum wavelength for fitting region (if None, fit full spectrum)
+            - maxWL - maximum wavelength for fitting region
+            - continuum_dict - dictionary with keys related to other model params. Keys are 
+                  - pl_norm
+                  - pl_alpha
+                  - fe_ii_width
+                  - fe_ii_scale
+                  - host_age
+                  - host_scale
+                  - bal_cont_tau
+                  - bal_cont_scale
+                  - bal_high_width
+                  - bal_high_scale
+              if you want the component turned off, the value for the related keys should be None
+              ex. continuum_dict={'pl_norm':15,'pl_alpha':-1.5,fe_ii_width:None,fe_ii_scale:None,...}
+            - free_values - list with initial values for the non-tied gaussian model params
+            - tied - list specifying ties between model params
+            - lower_bounds - lower bounds for emission model params.  This is indexed relative to free_values, not tied
+            - upper_bounds - upper bounds for emission model params.  This is indexed relative to free_values, not tied
+        '''
+        
+        self.tied=tied
+        
+        
+        def log_probability_custom(params_list):
+            '''
+            posterior for emcee
+            '''
+
+            lp=self.log_prior_custom(params_list)
+            if not np.isfinite(lp):
+                return -np.inf
+            return lp + self.log_likelihood_custom(params_list)
+        
+        if minWL is None:
+            self.wave_fit=self.wave
+            self.flux_fit=self.flux
+            self.err_fit=self.err
+        else:
+            indexes=np.where(np.logical_and(self.wave>=minWL, self.wave<=maxWL))[0]
+            self.wave_fit=self.wave[indexes]
+            self.flux_fit=self.flux[indexes]
+            self.err_fit=self.err[indexes]
+            
+        params_list=np.asarray([])
+        params_keys=np.asarray([])
+        lower_bounds_custom=np.asarray([]) # lower bounds with continuum and custom emission
+        upper_bounds_custom=np.asarray([]) # upper bounds with continuum and custom emission
+        
+        continuum_model_select={}
+        
+        # add continuum parameters to model
+        if contintuum_dict['pl_norm'] is not None:
+            params_keys=np.append(params_keys,'pl_norm')
+            params_list=np.append(params_list,contintuum_dict['pl_norm'])
+            params_keys=np.append(params_keys,'pl_alpha')
+            params_list=np.append(params_list,contintuum_dict['pl_alpha'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['pl_norm'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['pl_alpha'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['pl_norm'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['pl_alpha'])          
+            continuum_model_select['PowerLaw']=True
+        else:
+            continuum_model_select['PowerLaw']=False
+
+        if continuum_dict['fe_ii_width'] is not None:
+            params_keys=np.append(params_keys,'fe_ii_width')
+            params_list=np.append(params_list,continuum_dict['fe_ii_width'])
+            params_keys=np.append(params_keys,'fe_ii_scale')
+            params_list=np.append(params_list,continuum_dict['fe_ii_scale'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['fe_ii_width'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['fe_ii_scale'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['fe_ii_width'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['fe_ii_scale'])
+            continuum_model_select['FeII']=True
+        else:
+            continuum_model_select['FeII']=False
+            
+        if continuum_dict['host_age'] is not None:
+            params_keys=np.append(params_keys,'host_age')
+            params_list=np.append(params_list,continuum_dict['host_age'])
+            params_keys=np.append(params_keys,'host_scale')
+            params_list=np.append(params_list,continuum_dict['host_scale'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['host_age'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['host_scale'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['host_age'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['host_scale'])
+            continuum_model_select['Host']=True
+        else:
+            continuum_model_select['Host']=False
+            
+        if continuum_dict['bal_cont_tau'] is not None:
+            params_keys=np.append(params_keys,'bal_cont_tau')
+            params_list=np.append(params_list,continuum_dict['bal_cont_tau'])
+            params_keys=np.append(params_keys,'bal_cont_scale')
+            params_list=np.append(params_list,continuum_dict['bal_cont_scale'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['bal_cont_tau'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['bal_cont_scale'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['bal_cont_tau'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['bal_cont_scale'])
+            continuum_model_select['BalmerCont']=True
+        else:
+            continuum_model_select['BalmerCont']=False
+            
+        if continuum_dict['bal_high_width'] is not None:
+            params_keys=np.append(params_keys,'bal_high_width')
+            params_list=np.append(params_list,continuum_dict['bal_high_width'])
+            params_keys=np.append(params_keys,'bal_high_scale')
+            params_list=np.append(params_list,continuum_dict['bal_high_scale'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['bal_high_width'])
+            lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['bal_high_scale'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['bal_high_width'])
+            upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['bal_high_scale'])
+            continuum_model_select['BalmerHigh']=True
+        else:
+            continuum_model_select['BalmerHigh']=False
+            
+        self.continuum_model_select=continuum_model_select
+            
+        # now add custom emission lower bounds
+        lower_bounds_custom=np.append(lower_bounds_custom,lower_bounds)
+        upper_bounds_custom=np.append(upper_bounds_custom,upper_bounds)
+        self.lower_bounds_custom=lower_bounds_custom # these will have the same indexing as params_keys and params_list
+        self.upper_bounds_custom=upper_bounds_custom
+            
+        # add emission line parameters (trying to assign names that at least know if they're amp,wl,width)
+        idx_free=0
+        for i in range(len(tied)/3):
+            
+            if tied[i*3]=='':
+                params_keys=np.append(params_keys,'amp'+str(i+1))
+                params_list=np.append(params_list,free_values[idx_free])
+                idx_free+=1
+                
+            if tied[(i*3)+1]=='':
+                params_keys=np.append(params_keys,'wl'+str(i+1))
+                params_list=np.append(params_list,free_values[idx_free])
+                idx_free+=1        
+                
+            if tied[(i*3)+2]=='':
+                params_keys=np.append(params_keys,'width'+str(i+1))
+                params_list=np.append(params_list,free_values[idx_free])
+                
+        self.params_keys=params_keys
+        
+        ndim=len(params_list)
+        # Initialize walkers in a small Gaussian ball around initial parameter values
+        pos=params_list+ 1e-4 * np.random.randn(nwalkers, ndim)
+        
+        # Run Emcee
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_custom)
+        sampler.run_mcmc(pos,nsteps,progress=True)
+        
+        self.sampler=sampler
+                                          
+                                      
+    def log_prior_custom(params_list):
+        
+        for i in range(len(params_list)):
+            
+            if params_list[i]<self.lower_bounds_custom[i]:
+                return -np.inf
+            if params_list[i]>self.upper_bounds_custom[i]:
+                return -np.inf
+        return 0.0
+    
+    
+    def log_likelihood_custom(params_list):
+        
+        model=self.construct_custom_model_emcee(params_list)
+
+        return -0.5 * np.sum((self.flux_fit - model) ** 2 / self.err_fit**2)
+        
+        
+    def construct_custom_model_emcee(self,params_list):
+        
+        params_idx=0
+        model=np.zeros(len(self.wave_fit))
+        if self.continuum_model_select['PowerLaw']:
+            power_law=self.power_law(self.wave_fit,params_list[params_idx],params_list[params_idx+1])
+            model=model+power_law
+            params_idx+=2
+        if self.continuum_model_select['FeII']:
+            fe_ii=self.template_fitter(self.wave_fit,self.feii_templates,params_list[params_idx],params_list[params_idx+1])
+            model=model+fe_ii
+            params_idx+=2
+        if self.continuum_model_select['Host']:
+            host=self.template_fitter(self.wave_fit,self.stellar_templates,params_list[params_idx],params_list[params_idx+1])
+            model=model+host
+            params_idx+=2
+        if self.continuum_model_select['BalmerCont']:
+            balmer_cont=self.template_fitter(self.wave_fit,self.balmer_cont_templates,params_list[params_idx],params_list[params_idx+1])
+            model=model+balmer_cont
+            params_idx+=2
+        if self.continuum_model_select['BalmerHigh']:
+            balmer_highorder=self.template_fitter(self.wave_fit,self.balmer_highorder_templates,params_list[params_idx],params_list[params_idx+1])
+            model=model+balmer_highorder
+            params_idx+=2
+        
+        emiss_free_values=params_list[params_idx:]
+        emission=self.create_custom_emission(self.wave_fit,emiss_free_values,self.tied)
+        model=model+emission
+        
+        return model
+        
+          
+    def residuals_custom(self,params,data):
+        
+        wave,flux,err=data
+        model=self.construct_custom_model(wave,params)
+        resid=(flux-model)/err
+        return resid
+    
     def power_law(self,wave,norm,slope):
         '''
         continuum power law. Normalized at a specified WL.
