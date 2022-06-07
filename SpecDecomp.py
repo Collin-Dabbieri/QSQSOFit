@@ -630,9 +630,30 @@ class SpecDecomp():
         TODO rewrite to be able to account for something like p[6]*p[3]/p[0] which is necessary for tieing amp ratios
         '''
         
+        op = {'+': lambda x, y: x + y,
+              '-': lambda x, y: x - y,
+              '*': lambda x, y: x * y,
+              '/': lambda x, y: x / y}
+        
         # account for tying amp ratios ex. p[6]*p[3]/p[0]
-        if len(string.split('['))>2:
-            pass
+        if len(string.split('['))==4:
+            # this string references 3 entries in free_values
+            # for above example, it would be ['p','6]*p','3]/p','0]']
+            temp=string.split('[')
+            
+            # first index
+            temp=string.split('[')[1] # could be like '15]*p', or '5]*p'
+            idx1=int(temp.split(']')[0])
+            
+            # second index
+            temp=string.split('[')[2] # could be like '15]/p', or '5]/p'
+            idx2=int(temp.split(']')[0])
+            
+            # third index
+            temp=string.split('[')[3] # could be like '15]' or '5]'
+            idx3=int(temp.split(']')[0])
+            
+            return free_values[idx1]*free_values[idx2]/free_values[idx3]
         
         
         temp=string.split('[')[1] #temp should be like '15]*5'
@@ -688,7 +709,8 @@ class SpecDecomp():
         # or just len(free_values)
         idx_free=0
         emission=np.zeros(len(wave))
-        for i in range(len(tied)/3):
+        num_gauss=int(len(tied)/3)
+        for i in range(num_gauss):
             
             if tied[i*3]=='':
                 amp=free_values[idx_free]
@@ -894,11 +916,11 @@ class SpecDecomp():
         continuum_model_select={}
         
         # add continuum parameters to model
-        if contintuum_dict['pl_norm'] is not None:
+        if continuum_dict['pl_norm'] is not None:
             params_keys=np.append(params_keys,'pl_norm')
-            params_list=np.append(params_list,contintuum_dict['pl_norm'])
+            params_list=np.append(params_list,continuum_dict['pl_norm'])
             params_keys=np.append(params_keys,'pl_alpha')
-            params_list=np.append(params_list,contintuum_dict['pl_alpha'])
+            params_list=np.append(params_list,continuum_dict['pl_alpha'])
             lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['pl_norm'])
             lower_bounds_custom=np.append(lower_bounds_custom,self.lower_bounds['pl_alpha'])
             upper_bounds_custom=np.append(upper_bounds_custom,self.upper_bounds['pl_norm'])
@@ -969,7 +991,10 @@ class SpecDecomp():
             
         # add emission line parameters (trying to assign names that at least know if they're amp,wl,width)
         idx_free=0
-        for i in range(len(tied)/3):
+        if len(tied)%3!=0:
+            raise ValueError('The length of tied must be divisible by 3')
+        num_gauss=int(len(tied)/3)
+        for i in range(num_gauss):
             
             if tied[i*3]=='':
                 params_keys=np.append(params_keys,'amp'+str(i+1))
@@ -984,6 +1009,7 @@ class SpecDecomp():
             if tied[(i*3)+2]=='':
                 params_keys=np.append(params_keys,'width'+str(i+1))
                 params_list=np.append(params_list,free_values[idx_free])
+                idx_free+=1
                 
         self.params_keys=params_keys
         
@@ -998,7 +1024,7 @@ class SpecDecomp():
         self.sampler=sampler
                                           
                                       
-    def log_prior_custom(params_list):
+    def log_prior_custom(self,params_list):
         
         for i in range(len(params_list)):
             
@@ -1009,7 +1035,7 @@ class SpecDecomp():
         return 0.0
     
     
-    def log_likelihood_custom(params_list):
+    def log_likelihood_custom(self,params_list):
         
         model=self.construct_custom_model_emcee(params_list)
 
