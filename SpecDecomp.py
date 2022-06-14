@@ -91,10 +91,10 @@ class SpecDecomp():
         self.err_init=err
         self.wave,self.flux,self.err=self.clip_data(wave,flux,err)
         
-        feii_template_path='./files/fe_op_templates.npy'
-        stellar_template_path='./files/PyQSOfit_MILES_templates.dat'
-        balmer_cont_template_path='./files/balmer_cont_templates.npy'
-        balmer_highorder_template_path='./files/balmer_highorder_templates.npy'
+        feii_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/fe_op_templates.npy'
+        stellar_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/PyQSOfit_MILES_templates.dat'
+        balmer_cont_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/balmer_cont_templates.npy'
+        balmer_highorder_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/balmer_highorder_templates.npy'
         
         self.feii_templates=np.load(feii_template_path,allow_pickle=True)
         self.stellar_templates=np.genfromtxt(stellar_template_path,skip_header=5)
@@ -399,6 +399,18 @@ class SpecDecomp():
         
         return final_spectrum
     
+    def power_law(self,wave,norm,slope):
+        '''
+        continuum power law. Normalized at a specified WL.
+        
+        params:
+            wave - wavelengths of data
+            norm - power-law normalization factor
+            slope - power-law slope
+        '''
+        
+        return norm*(wave/self.pl_norm_wl)**slope
+    
     def gaussian(self,wave,amp,mu,sigma):
     
         return amp*np.exp(-(wave-mu)**2/(2*sigma**2))
@@ -681,7 +693,7 @@ class SpecDecomp():
             # no operation
             return free_values[idx]
         
-    def create_custom_emission(self,wave,free_values,tied):
+    def create_custom_emission(self,wave,free_values,tied,return_gaussians=False):
         '''
         This function will take parameters for a fully customizable set of Gaussian emission lines, and return the emission spectrum.
         Keep in mind that when using indexing in strings in the tied list, the indexes should refer to locations in free_values, 
@@ -703,6 +715,7 @@ class SpecDecomp():
             - wave - wavelength vector
             - free_values - list with values for the non-tied gaussian model params
             - tied - list specifying ties between model params
+            - return_gausssians - boolean for whether to return a list of gaussians
         '''
                      
         # The number of free parameters will be len(tied) minus the number of tied entries
@@ -710,6 +723,7 @@ class SpecDecomp():
         idx_free=0
         emission=np.zeros(len(wave))
         num_gauss=int(len(tied)/3)
+        gaussians=[]
         for i in range(num_gauss):
             
             if tied[i*3]=='':
@@ -730,12 +744,17 @@ class SpecDecomp():
                 
             # now construct a gaussian
             gaussian=self.gaussian(wave,amp,wl,width)
-            # add this gaussian onto our emission profile
-            emission=emission+gaussian
-            
+            if return_gaussians:
+                gaussians.append(gaussian)
+            else:
+                # add this gaussian onto our emission profile
+                emission=emission+gaussian
+        if return_gaussians:
+            return gaussians
+        
         return emission
             
-    def fit_custom_emission(self,minWL,maxWL,free_values,tied,can_vary,lower_bounds,upper_bounds,minimize_method):
+    def fit_custom_emission(self,wave_regions,continuum_dict,free_values,tied,can_vary,lower_bounds,upper_bounds,minimize_method):
         '''
         This function will take parameters for a fully customizable set of Gaussian emission lines, and fit the model
         Keep in mind that when using indexing in strings in the tied list, the indexes should refer to locations in free_values, 
@@ -746,90 +765,125 @@ class SpecDecomp():
         TODO should the model inherit from self.params_init for initial continuum parameters?
         
         params:
-            - minWL - minimum wavelength for fitting region (if None, fit full spectrum)
-            - maxWL - maximum wavelength for fitting region
+            - wave_regions - list of lists, each entry gives [minWL,maxWL] of a fitting region
+                             this allows for multiple WL regions in a single fit
+                             if None, fit full spectrum
+            - continuum_dict - dictionary with keys related to other model params. Keys are 
+                  - pl_norm
+                  - pl_alpha
+                  - fe_ii_width
+                  - fe_ii_scale
+                  - host_age
+                  - host_scale
+                  - bal_cont_tau
+                  - bal_cont_scale
+                  - bal_high_width
+                  - bal_high_scale
+              if you want the component turned off, the value for the related keys should be None
+              ex. continuum_dict={'pl_norm':15,'pl_alpha':-1.5,fe_ii_width:None,fe_ii_scale:None,...}
+              lower and upper bounds for continuum parameters are inherited from self.lower_bounds and self.upper_bounds
             - free_values - list with initial values for the non-tied gaussian model params
             - tied - list specifying ties between model params
-            - can_vary - which emission params are allowed to vary (True) or fixed (False). This is indexed relative to free_values, not tied
+            - can_vary - which params are allowed to vary (True) or fixed (False).
+                The indexing here is to first include any continuum params that are not set to None, then index relative to free_values
             - lower_bounds - lower bounds for emission model params.  This is indexed relative to free_values, not tied
             - upper_bounds - upper bounds for emission model params.  This is indexed relative to free_values, not tied
         '''
         
         self.tied=tied
+        self.num_params_emiss=len(free_values)
         
-        if minWL is None:
-            wave=self.wave
-            flux=self.flux
-            err=self.err
+        if wave_regions is None:
+            self.wave_fit=self.wave
+            self.flux_fit=self.flux
+            self.err_fit=self.err
         else:
-            indexes=np.where(np.logical_and(self.wave>=minWL, self.wave<=maxWL))[0]
-            wave=self.wave[indexes]
-            flux=self.flux[indexes]
-            err=self.err[indexes]
+            indexes=self.wave_region_select(self.wave,wave_regions)
+            self.wave_fit=self.wave[indexes]
+            self.flux_fit=self.flux[indexes]
+            self.err_fit=self.err[indexes]
             
         fit_params=Parameters()
         
+        vary_idx=0
+        
         #################################### Add Continuum Model Params 
-        # Power Law
-        if self.model_select['PowerLaw']:
+        
+        # add continuum parameters to model
+        if continuum_dict['pl_norm'] is not None:
+            
             fit_params.add('pl_norm',
-                           value=self.params_init['pl_norm'],
+                           value=continuum_dict['pl_norm'],
                            min=self.lower_bounds['pl_norm'],
                            max=self.upper_bounds['pl_norm'],
-                           vary=True)
+                           vary=can_vary[vary_idx])
+            
             fit_params.add('pl_alpha',
-                           value=self.params_init['pl_alpha'],
+                           value=continuum_dict['pl_alpha'],
                            min=self.lower_bounds['pl_alpha'],
                            max=self.upper_bounds['pl_alpha'],
-                           vary=True)
-        # Fe II
-        if self.model_select['FeII']:
+                           vary=can_vary[vary_idx+1])
+            
+            vary_idx+=2
+
+        if continuum_dict['fe_ii_width'] is not None:
+            
             fit_params.add('fe_ii_width',
-                           value=self.params_init['fe_ii_width'],
+                           value=continuum_dict['fe_ii_width'],
                            min=self.lower_bounds['fe_ii_width'],
                            max=self.upper_bounds['fe_ii_width'],
-                           vary=True)
+                           vary=can_vary[vary_idx])
             fit_params.add('fe_ii_scale',
-                           value=self.params_init['fe_ii_scale'],
+                           value=continuum_dict['fe_ii_scale'],
                            min=self.lower_bounds['fe_ii_scale'],
                            max=self.upper_bounds['fe_ii_scale'],
-                           vary=True)
-        # Host
-        if self.model_select['Host']:
+                           vary=can_vary[vary_idx+1])
+            vary_idx+=2
+ 
+        if continuum_dict['host_age'] is not None:
+        
             fit_params.add('host_age',
-                           value=self.params_init['host_age'],
+                           value=continuum_dict['host_age'],
                            min=self.lower_bounds['host_age'],
                            max=self.upper_bounds['host_age'],
-                           vary=True)
+                           vary=can_vary[vary_idx])
             fit_params.add('host_scale',
-                           value=self.params_init['host_scale'],
+                           value=continuum_dict['host_scale'],
                            min=self.lower_bounds['host_scale'],
                            max=self.upper_bounds['host_scale'],
-                           vary=True)
-        # Balmer Continuum
-        if self.model_select['BalmerCont']:
+                           vary=can_vary[vary_idx+1])
+            
+            vary_idx+=2
+
+        if continuum_dict['bal_cont_tau'] is not None:
+        
             fit_params.add('bal_cont_tau',
-                           value=self.params_init['bal_cont_tau'],
+                           value=continuum_dict['bal_cont_tau'],
                            min=self.lower_bounds['bal_cont_tau'],
                            max=self.upper_bounds['bal_cont_tau'],
-                           vary=True)
+                           vary=can_vary[vary_idx])
             fit_params.add('bal_cont_scale',
-                           value=self.params_init['bal_cont_scale'],
+                           value=continuum_dict['bal_cont_scale'],
                            min=self.lower_bounds['bal_cont_scale'],
                            max=self.upper_bounds['bal_cont_scale'],
-                           vary=True)
-        # Balmer High Order
-        if self.model_select['BalmerHigh']:
+                           vary=can_vary[vary_idx+1])
+            
+            vary_idx+=2
+
+        if continuum_dict['bal_high_width'] is not None:
+            
             fit_params.add('bal_high_width',
-                           value=self.params_init['bal_high_width'],
+                           value=continuum_dict['bal_high_width'],
                            min=self.lower_bounds['bal_high_width'],
                            max=self.upper_bounds['bal_high_width'],
-                           vary=True)
+                           vary=can_vary[vary_idx])
             fit_params.add('bal_high_scale',
-                           value=self.params_init['bal_high_scale'],
+                           value=continuum_dict['bal_high_scale'],
                            min=self.lower_bounds['bal_high_scale'],
                            max=self.upper_bounds['bal_high_scale'],
-                           vary=True)
+                           vary=can_vary[vary_idx+1])
+            
+            vary_idx+=2
             
         ######################################### Add Emission Model Params
         
@@ -838,18 +892,52 @@ class SpecDecomp():
                            value=free_values[i],
                            min=lower_bounds[i],
                            max=upper_bounds[i],
-                           vary=can_vary[i])
-            
+                           vary=can_vary[vary_idx])
+            vary_idx+=1
             
         ######################################## Fit Model
-        
-        data=(wave,flux,err)
         fit_result=minimize(self.residuals_custom, 
                             fit_params, 
-                            args=(data,),
                             nan_policy=self.nan_policy,
                             method=minimize_method,
                             max_nfev=None)
+        
+        self.fit_params=fit_result.params
+        self.fit_result=fit_result
+        
+    def residuals_custom(self,params):
+        
+        model=self.construct_custom_model(params)
+        resid=(self.flux_fit-model)/self.err_fit
+        return resid
+    
+    def construct_custom_model(self,params):
+        
+        model=np.zeros(len(self.wave_fit))
+        
+        if 'pl_norm' in params:
+            power_law=self.power_law(self.wave_fit,params['pl_norm'],params['pl_alpha'])
+            model=model+power_law
+        if 'fe_ii_width' in params:
+            fe_ii=self.template_fitter(self.wave_fit,self.feii_templates,params['fe_ii_width'],params['fe_ii_scale'])
+            model=model+fe_ii
+        if 'host_age' in params:
+            host=self.template_fitter(self.wave_fit,self.stellar_templates,params['host_age'],params['host_scale'])
+            model=model+host  
+        if 'bal_cont_tau' in params:
+            bal_cont=self.template_fitter(self.wave_fit,self.balmer_cont_templates,params['bal_cont_tau'],params['bal_cont_scale'])
+            model=model+bal_cont 
+        if 'bal_high_width' in params:
+            bal_high=self.template_fitter(self.wave_fit,self.balmer_highorder_templates,params['bal_high_width'],params['bal_high_scale'])
+            model=model+bal_high
+            
+        free_values=np.asarray([params['emission_'+str(i)] for i in range(self.num_params_emiss)])
+        emission=self.create_custom_emission(self.wave_fit,free_values,self.tied)
+        model=model+emission
+        
+        return model
+            
+         
         
     def fit_custom_emission_emcee(self,nwalkers,nsteps,minWL,maxWL,continuum_dict,free_values,tied,lower_bounds,upper_bounds):
         '''
@@ -1073,25 +1161,6 @@ class SpecDecomp():
         
         return model
         
-          
-    def residuals_custom(self,params,data):
-        
-        wave,flux,err=data
-        model=self.construct_custom_model(wave,params)
-        resid=(flux-model)/err
-        return resid
-    
-    def power_law(self,wave,norm,slope):
-        '''
-        continuum power law. Normalized at a specified WL.
-        
-        params:
-            wave - wavelengths of data
-            norm - power-law normalization factor
-            slope - power-law slope
-        '''
-        
-        return norm*(wave/self.pl_norm_wl)**slope
     
     def construct_model(self,wave,params,fit_type):
         '''
