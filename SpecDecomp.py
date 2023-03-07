@@ -23,7 +23,7 @@ import glob
 from lmfit import Parameters, fit_report, minimize
 import time
 import emcee
-import pyspeckit
+#import pyspeckit
 
 # params['pl_norm']
 # params['pl_alpha']
