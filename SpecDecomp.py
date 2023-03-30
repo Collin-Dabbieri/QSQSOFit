@@ -91,10 +91,10 @@ class SpecDecomp():
         self.err_init=err
         self.wave,self.flux,self.err=self.clip_data(wave,flux,err)
         
-        feii_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/fe_op_templates.npy'
-        stellar_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/PyQSOfit_MILES_templates.dat'
-        balmer_cont_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/balmer_cont_templates.npy'
-        balmer_highorder_template_path='/Users/dabbiecm/github_repos/QSQSOFit/files/balmer_highorder_templates.npy'
+        feii_template_path='/Users/dabbiecm/Dropbox/github_repos/QSQSOFit/files/fe_op_templates.npy'
+        stellar_template_path='/Users/dabbiecm/Dropbox/github_repos/QSQSOFit/files/PyQSOfit_MILES_templates.dat'
+        balmer_cont_template_path='/Users/dabbiecm/Dropbox/github_repos/QSQSOFit/files/balmer_cont_templates.npy'
+        balmer_highorder_template_path='/Users/dabbiecm/Dropbox/github_repos/QSQSOFit/files/balmer_highorder_templates.npy'
         
         self.feii_templates=np.load(feii_template_path,allow_pickle=True)
         self.stellar_templates=np.genfromtxt(stellar_template_path,skip_header=5)
@@ -939,7 +939,7 @@ class SpecDecomp():
             
          
         
-    def fit_custom_emission_emcee(self,nwalkers,nsteps,minWL,maxWL,continuum_dict,free_values,tied,lower_bounds,upper_bounds):
+    def fit_custom_emission_emcee(self,nwalkers,nsteps,minWL,maxWL,continuum_dict,free_values,tied,lower_bounds,upper_bounds,num_threads):
         '''
         This function will take parameters for a fully customizable set of Gaussian emission lines, and fit the model with emcee
         Keep in mind that when using indexing in strings in the tied list, the indexes should refer to locations in free_values, 
@@ -971,6 +971,7 @@ class SpecDecomp():
             - tied - list specifying ties between model params
             - lower_bounds - lower bounds for emission model params.  This is indexed relative to free_values, not tied
             - upper_bounds - upper bounds for emission model params.  This is indexed relative to free_values, not tied
+            - num_threads - number of threads for parallel emceee fit
         '''
         
         self.tied=tied
@@ -1105,9 +1106,10 @@ class SpecDecomp():
         # Initialize walkers in a small Gaussian ball around initial parameter values
         pos=params_list+ 1e-4 * np.random.randn(nwalkers, ndim)
         
-        # Run Emcee
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_custom)
-        sampler.run_mcmc(pos,nsteps,progress=True)
+        with Pool(num_threads) as pool:
+            # Run Emcee
+            sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability_custom,pool=pool)
+            sampler.run_mcmc(pos,nsteps,progress=True)
         
         self.sampler=sampler
                                           
